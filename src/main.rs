@@ -1,16 +1,30 @@
 mod components;
+mod dtos;
+
+use std::time::Duration;
+
 use bevy::{
-    core_pipeline::bloom::BloomSettings, input::mouse::{MouseButtonInput, MouseMotion}, prelude::*, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, utils::HashSet
+    core_pipeline::bloom::BloomSettings, input::mouse::{MouseButtonInput, MouseMotion}, prelude::*, sprite::{MaterialMesh2dBundle, Mesh2dHandle}, time::common_conditions::{on_timer, repeating_after_delay}
 };
-use components::{MousePressed, PixelGrain};
+use components::{MousePressed, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
+use crossbeam_channel::unbounded;
+use dtos::PixelGrainDto;
 
 fn main() {
     App::new()
         .add_plugins((DefaultPlugins))
         .add_systems(Startup, (setup_camera))
-        .add_systems(Update, (handle_mouse, draw_pixel_grains, despawn_pixel_grains))
+        .add_systems(Update, (handle_mouse, draw_gizmos, (spawn_draw_pixel_grains_task.run_if(on_timer(Duration::from_secs(1),)), read_status_stream).chain(), (read_stream, despawn_pixel_grains).chain()))
         .run();
 }
+
+fn setup_window_size(
+    mut windows: Query<&mut Window>,
+) {
+    let mut window = windows.single_mut();
+    window.resolution.set(100.0, 100.0);
+}
+
 
 const PIXEL_SIZE: f32 = 10.0;
 
@@ -28,6 +42,22 @@ fn setup_camera(mut commands: Commands) {
     ));
     
     commands.insert_resource(MousePressed(false));
+    commands.insert_resource(PixelRectRequestStatus::Failed);
+
+    let (tx, rx) = unbounded::<Vec<PixelGrainDto>>();
+
+    commands.insert_resource(StreamReceiver(rx));
+    commands.insert_resource(StreamSender(tx));
+
+    let (tx, rx) = unbounded::<PixelRectRequestStatus>();
+
+    commands.insert_resource(StatusStreamReceiver(rx));
+    commands.insert_resource(StatusStreamSender(tx));
+}
+
+
+fn draw_gizmos(mut gizmos: Gizmos) {
+    gizmos.rect_2d(Vec2::new(-40.0, -290.0), 0.0, Vec2::new(10.0, 10.0), Color::RED);
 }
 
 
@@ -75,12 +105,11 @@ fn handle_mouse(
        // println!("Box X: {} , Y: {}, Z: {}", camera.translation.x, camera.translation.y, camera.translation.z);
 }
 
-fn draw_pixel_grains(
+fn spawn_draw_pixel_grains_task(
     camera_query: Query<(&Camera, &GlobalTransform)>,
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    pixel_grains: Query<(Entity, &PixelGrain)>,
+    sender: Res<StreamSender>,
+    status_sender: Res<StatusStreamSender>,
+    mut rect_request_status: ResMut<PixelRectRequestStatus>
 ) {
     //println!("Entering draw_pixel_grains");
     let (camera, camera_transform) = camera_query.single();
@@ -94,47 +123,115 @@ fn draw_pixel_grains(
     let Some(top_left) = camera.viewport_to_world_2d(camera_transform, Vec2::new(0., 0.)) else {
         return;
     };
-    let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
-    let top_left = (top_left / 10.0).floor() * 10.0;
+    println!("top_left raw {:?}", &top_left,);
+    //let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
+    let top_left = (top_left / PIXEL_SIZE).floor() ;
 
     let Some(botton_right) = camera.viewport_to_world_2d(camera_transform, Vec2::new(width, height)) else {
         return;
     };
-    
-    let botton_right = (botton_right / 10.0).floor() * 10.0;
+    println!("botton_right raw {:?}", &botton_right,);
+    println!("view_port_size raw {:?}", &view_port_size,);
+    let botton_right = (botton_right / PIXEL_SIZE).floor();
 
-    let pixel_grains_hash: bevy::utils::hashbrown::HashSet<(i64, i64)> = HashSet::from_iter(pixel_grains.iter().map(|(_, pg)|  (pg.x , pg.y)));
     
-    let mut new_pixel_grains = vec![];
+    println!("top_left {:?}", &top_left,);
+    println!("bottom_right {:?}", &botton_right,);
+
+    let continue_fetch = match *rect_request_status {
+        PixelRectRequestStatus::InProgress => false,
+        PixelRectRequestStatus::Failed => true,
+        PixelRectRequestStatus::Success(rect) => {
+            !(rect.top_left == top_left && rect.botton_right == botton_right)
+        },
+    };
+
+    //println!("continue_fetch {:?}", &continue_fetch,);
+
+    if !continue_fetch {
+        return;
+    }
+
+    *rect_request_status = PixelRectRequestStatus::InProgress;
     
-    for x in ((top_left.x.to_pixel_size() as i64)..(botton_right.x.to_pixel_size() as i64)).step_by(PIXEL_SIZE as usize) {
-        //println!("inside loop 1, {}", x);
-        for y in ((botton_right.y.to_pixel_size() as i64)..(top_left.y.to_pixel_size() as i64)).step_by(PIXEL_SIZE as usize)  {
-            //println!("inside loop 2, {}, {}", x, y);
-            if pixel_grains_hash.contains(&(x, y)) {
-                //println!("pixel_grains_hash.contains, {}, {}", x, y);
-                continue;
+    let url =format!("http://172.104.37.82/api/canvas/rectangle?topLeftX={}&topLeftY={}&bottomRightX={}&bottomRightY={}", top_left.x, top_left.y, botton_right.x, botton_right.y );
+    println!("Requesting url {}", url);
+    let request = ehttp::Request::get(url);
+    let sender = sender.clone();
+    let status_sender = status_sender.clone();
+    ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
+        println!("Result: {:?}", result);
+
+        if let Ok(response) = result {
+            if let Ok(dto) = response.json::<Vec<PixelGrainDto>>(){
+                if let Ok(_) = sender.send(dto) {
+                    let _ = status_sender.send(PixelRectRequestStatus::Success(PixelRectangle{top_left, botton_right}));
+                    return;;
+                }
             }
+        }
+        let _ = status_sender.send(PixelRectRequestStatus::Failed);
+        
+    });
 
-            let color = Color::rgb(1.0,0.0,0.0);
+}
+
+fn read_status_stream(receiver: Res<StatusStreamReceiver>, mut rect_request_status: ResMut<PixelRectRequestStatus>){
+    for status in receiver.try_iter() {
+        *rect_request_status = status;
+    }
+}
+// This system reads from the receiver and sends events to Bevy
+fn read_stream(receiver: Res<StreamReceiver>,
+    mut commands: Commands,
+    pixel_grains: Query<(Entity, &PixelGrain)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>) {
+
+    let mut x = 0.0;
+    let mut y = 0.0;
+
+    for pixel_grain_dtos in receiver.try_iter() {
+        
+        for pixel_grain_dto in pixel_grain_dtos {
+            
+           let mut entity: Option<Entity> = None;
+            for (e, pg) in pixel_grains.iter() {
+                if pg.x == pixel_grain_dto.x && pg.y == pixel_grain_dto.y {
+                    entity = Some(e);
+                    break;
+                }
+            }
+            let entity = match  entity {
+                Some(e) => e,
+                None => commands.spawn_empty().id(),
+            };
+            
+            let color = Color::hex(pixel_grain_dto.color);
+            let color = match color {
+                Ok(c) => c,
+                Err(_) => Color::GRAY,
+            };
             let shape = Mesh2dHandle(meshes.add(Rectangle::new(PIXEL_SIZE, PIXEL_SIZE)));
+            x = pixel_grain_dto.x as f32 * PIXEL_SIZE;
+            y = pixel_grain_dto.y as f32 * PIXEL_SIZE;
 
-            //add to a vec so we can batch spawn them.
-            new_pixel_grains.push((PixelGrain::new(x as i64, y as i64), MaterialMesh2dBundle {
+            
+            commands.entity(entity).insert(( PixelGrain::new(pixel_grain_dto.x, pixel_grain_dto.y) , MaterialMesh2dBundle {
                 mesh: shape,
                 material: materials.add(color),
                 transform: Transform::from_xyz(
                     // Distribute shapes from -X_EXTENT/2 to +X_EXTENT/2.
-                    x.to_pixel_size(), y.to_pixel_size(), 0.0,
+                    x, y, 0.0,
                 ),
                 ..default()
-            }))
-
+            }));
+            
         }
+    
     }
 
-    commands.spawn_batch(new_pixel_grains);
-
+    println!("insert x and y {}, {}", x, y);
 }
 
 fn despawn_pixel_grains(camera_query: Query<(&Camera, &GlobalTransform)>,
@@ -154,28 +251,26 @@ fn despawn_pixel_grains(camera_query: Query<(&Camera, &GlobalTransform)>,
         return;
     };
     let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
-    let top_left = (top_left / 10.0).floor() * 10.0;
+    let top_left = (top_left / 10.0).floor();
 
     let Some(botton_right) = camera.viewport_to_world_2d(camera_transform, Vec2::new(width, height)) else {
         return;
     };
     
-    let botton_right = (botton_right / 10.0).floor() * 10.0;
+    let botton_right = (botton_right / 10.0).floor();
 
 
     let world_rect: Rect = Rect::from_corners(top_left, botton_right);
     for (entity, pixel_grain) in pixel_grains.iter() {
         if !world_rect.contains(Vec2::new(pixel_grain.x as f32, pixel_grain.y as f32)) {
-            // println!("Despawning pixel_grain, {}, {}", pixel_grain.x, pixel_grain.y);
-            // println!("Despawning pixel_grain, {:?}", world_rect);
-            // println!("Despawning pixel_grain, {:?}", top_left);
-            // println!("Despawning pixel_grain botton_right, {:?}", botton_right);
             commands.entity(entity).despawn();
         }
     }
 
 
 }
+
+
 
 
 pub trait ToPixelSize {
