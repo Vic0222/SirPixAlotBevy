@@ -57,7 +57,7 @@ fn setup_camera(mut commands: Commands) {
 
 
 fn draw_gizmos(mut gizmos: Gizmos) {
-    gizmos.rect_2d(Vec2::new(-40.0, -290.0), 0.0, Vec2::new(10.0, 10.0), Color::RED);
+    gizmos.rect_2d(Vec2::new(0.0, 0.0), 0.0, Vec2::new(10.0, 10.0), Color::RED);
 }
 
 
@@ -118,26 +118,11 @@ fn spawn_draw_pixel_grains_task(
     let Some(view_port_size) = camera.logical_viewport_size() else {
         return;
     };
-    let width = view_port_size.x ;
-    let height = view_port_size.y;
-    let Some(top_left) = camera.viewport_to_world_2d(camera_transform, Vec2::new(0., 0.)) else {
+    let Some((top_left, botton_right)) = get_rect(view_port_size, camera, camera_transform) else {
         return;
     };
-    println!("top_left raw {:?}", &top_left,);
-    //let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
-    let top_left = (top_left / PIXEL_SIZE).floor() ;
-
-    let Some(botton_right) = camera.viewport_to_world_2d(camera_transform, Vec2::new(width, height)) else {
-        return;
-    };
-    println!("botton_right raw {:?}", &botton_right,);
-    println!("view_port_size raw {:?}", &view_port_size,);
-    let botton_right = (botton_right / PIXEL_SIZE).floor();
 
     
-    println!("top_left {:?}", &top_left,);
-    println!("bottom_right {:?}", &botton_right,);
-
     let continue_fetch = match *rect_request_status {
         PixelRectRequestStatus::InProgress => false,
         PixelRectRequestStatus::Failed => true,
@@ -154,7 +139,7 @@ fn spawn_draw_pixel_grains_task(
 
     *rect_request_status = PixelRectRequestStatus::InProgress;
     
-    let url =format!("http://172.104.37.82/api/canvas/rectangle?topLeftX={}&topLeftY={}&bottomRightX={}&bottomRightY={}", top_left.x, top_left.y, botton_right.x, botton_right.y );
+    let url =format!("http://172.104.37.82/api/canvas?topLeftX={}&topLeftY={}&bottomRightX={}&bottomRightY={}", top_left.x, top_left.y, botton_right.x, botton_right.y );
     println!("Requesting url {}", url);
     let request = ehttp::Request::get(url);
     let sender = sender.clone();
@@ -166,7 +151,7 @@ fn spawn_draw_pixel_grains_task(
             if let Ok(dto) = response.json::<Vec<PixelGrainDto>>(){
                 if let Ok(_) = sender.send(dto) {
                     let _ = status_sender.send(PixelRectRequestStatus::Success(PixelRectangle{top_left, botton_right}));
-                    return;;
+                    return;
                 }
             }
         }
@@ -174,6 +159,28 @@ fn spawn_draw_pixel_grains_task(
         
     });
 
+}
+
+fn get_rect(view_port_size: Vec2, camera: &Camera, camera_transform: &GlobalTransform) -> Option<(Vec2, Vec2)> {
+    let width = view_port_size.x ;
+    let height = view_port_size.y;
+    let Some(top_left) = camera.viewport_to_world_2d(camera_transform, Vec2::new(0., 0.)) else {
+        return None;
+    };
+    
+    let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
+    let top_left = (top_left / PIXEL_SIZE).floor() ;
+
+    let Some(botton_right) = camera.viewport_to_world_2d(camera_transform, Vec2::new(width, height)) else {
+        return None;
+    };
+    
+    let botton_right = botton_right + Vec2::new(PIXEL_SIZE * 3.0, PIXEL_SIZE * -3.0);
+    let botton_right = (botton_right / PIXEL_SIZE).floor();
+
+    
+    
+    Some((top_left, botton_right))
 }
 
 fn read_status_stream(receiver: Res<StatusStreamReceiver>, mut rect_request_status: ResMut<PixelRectRequestStatus>){
@@ -187,9 +194,6 @@ fn read_stream(receiver: Res<StreamReceiver>,
     pixel_grains: Query<(Entity, &PixelGrain)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>) {
-
-    let mut x = 0.0;
-    let mut y = 0.0;
 
     for pixel_grain_dtos in receiver.try_iter() {
         
@@ -213,8 +217,8 @@ fn read_stream(receiver: Res<StreamReceiver>,
                 Err(_) => Color::GRAY,
             };
             let shape = Mesh2dHandle(meshes.add(Rectangle::new(PIXEL_SIZE, PIXEL_SIZE)));
-            x = pixel_grain_dto.x as f32 * PIXEL_SIZE;
-            y = pixel_grain_dto.y as f32 * PIXEL_SIZE;
+            let x = pixel_grain_dto.x as f32 * PIXEL_SIZE;
+            let y = pixel_grain_dto.y as f32 * PIXEL_SIZE;
 
             
             commands.entity(entity).insert(( PixelGrain::new(pixel_grain_dto.x, pixel_grain_dto.y) , MaterialMesh2dBundle {
@@ -230,8 +234,6 @@ fn read_stream(receiver: Res<StreamReceiver>,
         }
     
     }
-
-    println!("insert x and y {}, {}", x, y);
 }
 
 fn despawn_pixel_grains(camera_query: Query<(&Camera, &GlobalTransform)>,
@@ -245,20 +247,10 @@ fn despawn_pixel_grains(camera_query: Query<(&Camera, &GlobalTransform)>,
     let Some(view_port_size) = camera.logical_viewport_size() else {
         return;
     };
-    let width = view_port_size.x ;
-    let height = view_port_size.y;
-    let Some(top_left) = camera.viewport_to_world_2d(camera_transform, Vec2::new(0., 0.)) else {
+
+    let Some((top_left, botton_right)) = get_rect(view_port_size, camera, camera_transform) else {
         return;
     };
-    let top_left = top_left + Vec2::new(PIXEL_SIZE * -3.0, PIXEL_SIZE * 3.0);
-    let top_left = (top_left / 10.0).floor();
-
-    let Some(botton_right) = camera.viewport_to_world_2d(camera_transform, Vec2::new(width, height)) else {
-        return;
-    };
-    
-    let botton_right = (botton_right / 10.0).floor();
-
 
     let world_rect: Rect = Rect::from_corners(top_left, botton_right);
     for (entity, pixel_grain) in pixel_grains.iter() {
