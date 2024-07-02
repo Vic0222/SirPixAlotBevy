@@ -4,7 +4,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::dtos::PixelGrainDto;
 
 #[derive(Resource)]
-pub struct MousePressed(pub bool);
+pub struct MouseRightButtonPressed(pub bool);
 
 #[derive(Resource, Deref)]
 pub struct StreamReceiver(pub Receiver<Vec<PixelGrainDto>>);

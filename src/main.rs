@@ -1,14 +1,17 @@
 mod components;
 mod dtos;
+mod http;
 
 use std::time::Duration;
 
 use bevy::{
     core_pipeline::bloom::BloomSettings, input::mouse::{MouseButtonInput, MouseMotion}, prelude::*, time::common_conditions::on_timer, window::PrimaryWindow
 };
-use components::{MousePressed, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
+use components::{MouseRightButtonPressed, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
 use crossbeam_channel::unbounded;
 use dtos::PixelGrainDto;
+
+const API_BASE_URL: &str = "http://172.104.37.82";
 
 fn main() {
     let mut binding = App::new();
@@ -81,7 +84,7 @@ fn setup_camera(mut commands: Commands) {
         BloomSettings::NATURAL,
     ));
     
-    commands.insert_resource(MousePressed(false));
+    commands.insert_resource(MouseRightButtonPressed(false));
     commands.insert_resource(PixelRectRequestStatus::Failed);
 
     let (tx, rx) = unbounded::<Vec<PixelGrainDto>>();
@@ -125,7 +128,7 @@ fn handle_mouse(
     mut button_events: EventReader<MouseButtonInput>,
     mut motion_events: EventReader<MouseMotion>,
     mut camera: Query<&mut Transform, With<Camera2d>>,
-    mut mouse_pressed: ResMut<MousePressed>,
+    mut mouse_pressed: ResMut<MouseRightButtonPressed>,
 ) {
     let Ok(mut camera) = camera.get_single_mut() else {
         return;
@@ -133,10 +136,37 @@ fn handle_mouse(
 
     // Store left-pressed state in the MousePressed resource
     for button_event in button_events.read() {
-        if button_event.button != MouseButton::Right {
-            continue;
+        
+        match button_event.button {
+            MouseButton::Right => {
+                *mouse_pressed = MouseRightButtonPressed(button_event.state.is_pressed());
+            },
+            MouseButton::Left => {
+                let url =format!("{}/api/canvas/pixel", API_BASE_URL );
+                println!("Requesting url {}", url);
+                //get this from mouse position and a color pallete
+                let pixel_dto = PixelGrainDto { x: 0, y: 0, color: "#101010".to_string()};
+                let Ok(request): Result<ehttp::Request, serde_json::Error> = http::put_json(url, &pixel_dto) else {
+                    continue;
+                };
+                ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
+                    println!("Result: {:?}", result);
+            
+                    if let Ok(response) = result {
+                        if let Ok(dto) = response.json::<Vec<PixelGrainDto>>(){
+                            // if let Ok(_) = sender.send(dto) {
+                            //     let _ = status_sender.send(PixelRectRequestStatus::Success(PixelRectangle{top_left, botton_right}));
+                            //     return;
+                            // }
+                        }
+                    }
+                    //let _ = status_sender.send(PixelRectRequestStatus::Failed);
+                    
+                });
+            },
+            _ => continue,
         }
-        *mouse_pressed = MousePressed(button_event.state.is_pressed());
+        
     }
     
     // If the mouse is not pressed, just ignore motion events
@@ -198,7 +228,8 @@ fn spawn_draw_pixel_grains_task(
 
     *rect_request_status = PixelRectRequestStatus::InProgress;
     
-    let url =format!("http://172.104.37.82/api/canvas?topLeftX={}&topLeftY={}&bottomRightX={}&bottomRightY={}", top_left.x, top_left.y, botton_right.x, botton_right.y );
+    //moved url to a constant
+    let url =format!("{}/api/canvas?topLeftX={}&topLeftY={}&bottomRightX={}&bottomRightY={}", API_BASE_URL, top_left.x, top_left.y, botton_right.x, botton_right.y );
     println!("Requesting url {}", url);
     let request = ehttp::Request::get(url);
     let sender = sender.clone();
