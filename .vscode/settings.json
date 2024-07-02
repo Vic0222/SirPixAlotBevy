@@ -1,0 +1,4 @@
+{
+    "rust-analyzer.cargoRunner": null,
+    "rust-analyzer.cargo.target": "wasm32-unknown-unknown",
+}
