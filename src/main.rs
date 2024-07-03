@@ -129,6 +129,7 @@ fn handle_mouse(
     mut motion_events: EventReader<MouseMotion>,
     mut camera: Query<&mut Transform, With<Camera2d>>,
     mut mouse_pressed: ResMut<MouseRightButtonPressed>,
+    sender: Res<StreamSender>,
 ) {
     let Ok(mut camera) = camera.get_single_mut() else {
         return;
@@ -145,23 +146,19 @@ fn handle_mouse(
                 let url =format!("{}/api/canvas/pixel", API_BASE_URL );
                 println!("Requesting url {}", url);
                 //get this from mouse position and a color pallete
-                let pixel_dto = PixelGrainDto { x: 0, y: 0, color: "#101010".to_string()};
+                let pixel_dto = PixelGrainDto { x: 0, y: 0, color: "#0000FF".to_string()};
                 let Ok(request): Result<ehttp::Request, serde_json::Error> = http::put_json(url, &pixel_dto) else {
                     continue;
                 };
+                let sender = sender.clone();
                 ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
                     println!("Result: {:?}", result);
             
                     if let Ok(response) = result {
-                        if let Ok(dto) = response.json::<Vec<PixelGrainDto>>(){
-                            // if let Ok(_) = sender.send(dto) {
-                            //     let _ = status_sender.send(PixelRectRequestStatus::Success(PixelRectangle{top_left, botton_right}));
-                            //     return;
-                            // }
+                        if let Ok(dto) = response.json::<PixelGrainDto>(){
+                            let _ = sender.send(vec![dto]);
                         }
                     }
-                    //let _ = status_sender.send(PixelRectRequestStatus::Failed);
-                    
                 });
             },
             _ => continue,
