@@ -11,10 +11,12 @@ pub fn put_json<T>(url: impl ToString, body: &T) -> serde_json::error::Result<Re
 where
     T: ?Sized + Serialize,
 {
+    let to_string = serde_json::to_string(body)?;
+    println!("to_string: {:?}", to_string);
     Ok(Request {
         method: "PUT".to_owned(),
         url: url.to_string(),
-        body: serde_json::to_string(body)?.into_bytes(),
+        body: to_string.into_bytes(),
         headers: Headers::new(&[("Accept", "*/*"), ("Content-Type", "application/json")]),
         #[cfg(target_arch = "wasm32")]
         mode: Mode::default(),

@@ -18,6 +18,9 @@ pub struct StatusStreamSender(pub Sender<PixelRectRequestStatus>);
 #[derive(Resource, Deref)]
 pub struct StatusStreamReceiver(pub Receiver<PixelRectRequestStatus>);
 
+#[derive(Resource, Deref)]
+pub struct PickedColor(pub [u8; 3]);
+
 
 #[derive(Component)]
 pub struct PixelGrain {

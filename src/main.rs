@@ -7,7 +7,8 @@ use std::time::Duration;
 use bevy::{
     core_pipeline::bloom::BloomSettings, input::mouse::{MouseButtonInput, MouseMotion}, prelude::*, time::common_conditions::on_timer, window::PrimaryWindow
 };
-use components::{MouseRightButtonPressed, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
+use bevy_egui::{egui::{self, color_picker::{color_edit_button_rgb, color_edit_button_srgb}}, EguiContexts, EguiPlugin};
+use components::{MouseRightButtonPressed, PickedColor, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
 use crossbeam_channel::unbounded;
 use dtos::PixelGrainDto;
 
@@ -17,13 +18,17 @@ fn main() {
     let mut binding = App::new();
     let app = binding
         .add_plugins(DefaultPlugins)
+        .add_plugins(EguiPlugin)
         .add_systems(Startup, (setup_camera))
-        .add_systems(Update, (update_window_size,handle_mouse, draw_gizmos, (spawn_draw_pixel_grains_task.run_if(on_timer(Duration::from_secs(1),)), read_status_stream).chain(), (read_stream, despawn_pixel_grains).chain()))
-        ;
-    use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
-    let app = app.add_plugins(FrameTimeDiagnosticsPlugin::default());
+        .add_systems(Update, (color_picker_system, update_window_size,handle_mouse, draw_gizmos, (spawn_draw_pixel_grains_task.run_if(on_timer(Duration::from_secs(1),)), read_status_stream).chain(), (read_stream, despawn_pixel_grains).chain()));
         
     app.run();
+}
+
+fn color_picker_system(mut contexts: EguiContexts, mut picked_color: ResMut<PickedColor>) {
+    egui::Window::new("Color Picker").show(contexts.ctx_mut(), |ui| {
+        color_edit_button_srgb(ui, &mut picked_color.0);
+    });
 }
 
 
@@ -96,32 +101,43 @@ fn setup_camera(mut commands: Commands) {
 
     commands.insert_resource(StatusStreamReceiver(rx));
     commands.insert_resource(StatusStreamSender(tx));
+    commands.insert_resource(PickedColor([255,255,255]));
 }
 
 
 fn draw_gizmos(mut gizmos: Gizmos, q_windows: Query<&Window, With<PrimaryWindow>>, camera_query: Query<(&Camera, &GlobalTransform)>) {
     // Games typically only have one window (the primary window)
-    let Some(position) = q_windows.single().cursor_position() else {
+    let Some((x, y)) = get_mouse_pixel(&q_windows, &camera_query) else {
         return;
     };
-    let Ok((camera, camera_transform)) = camera_query.get_single() else {
-        return;
-    };
-
-    //println!("view position: {:?}", position);
-    let Some(position) = camera.viewport_to_world_2d(camera_transform, position) else {
-        return;
-    };
-
-    //println!(" world cursor position: {:?}", position);
-    let x = (position.x / PIXEL_SIZE).floor() * 10.0;
-    let y = (position.y / PIXEL_SIZE).ceil() * 10.0;
-
-    //println!(" normalize cursor position: {:?}, {:?}", x, y);
 
     gizmos.rect_2d(Vec2::new(x, y), 0.0, Vec2::new(PIXEL_SIZE, PIXEL_SIZE), Color::RED);
 }
 
+fn get_mouse_pixel(q_windows: &Query<&Window, With<PrimaryWindow>>, camera_query: &Query<(&Camera, &GlobalTransform), ()>) -> Option<(f32, f32)> {
+    let Some(position) = q_windows.single().cursor_position() else {
+        return None;
+    };
+    let Ok((camera, camera_transform)) = camera_query.get_single() else {
+        return None;
+    };
+    
+    //println!("view position: {:?}", position);
+    let Some(position) = camera.viewport_to_world_2d(camera_transform, position) else {
+        return None;
+    };
+    
+    //println!(" world cursor position: {:?}", position);
+    let x = (position.x / PIXEL_SIZE).floor() * 10.0;
+    let y = (position.y / PIXEL_SIZE).ceil() * 10.0;
+    Some((x, y))
+}
+
+
+fn color_to_hex(color: &[u8; 3]) -> String {
+    println!("color to hex: {:?}", color);
+    format!("#{:02x}{:02x}{:02x}", color[0], color[1], color[2])
+}
 
 // Handle user mouse input for panning the camera around
 fn handle_mouse(
@@ -129,7 +145,10 @@ fn handle_mouse(
     mut motion_events: EventReader<MouseMotion>,
     mut camera: Query<&mut Transform, With<Camera2d>>,
     mut mouse_pressed: ResMut<MouseRightButtonPressed>,
+    q_windows: Query<&Window, With<PrimaryWindow>>,
+    camera_query: Query<(&Camera, &GlobalTransform)>,
     sender: Res<StreamSender>,
+    picked_color: ResMut<PickedColor>
 ) {
     let Ok(mut camera) = camera.get_single_mut() else {
         return;
@@ -143,23 +162,29 @@ fn handle_mouse(
                 *mouse_pressed = MouseRightButtonPressed(button_event.state.is_pressed());
             },
             MouseButton::Left => {
-                let url =format!("{}/api/canvas/pixel", API_BASE_URL );
-                println!("Requesting url {}", url);
-                //get this from mouse position and a color pallete
-                let pixel_dto = PixelGrainDto { x: 0, y: 0, color: "#0000FF".to_string()};
-                let Ok(request): Result<ehttp::Request, serde_json::Error> = http::put_json(url, &pixel_dto) else {
-                    continue;
-                };
-                let sender = sender.clone();
-                ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
-                    println!("Result: {:?}", result);
-            
-                    if let Ok(response) = result {
-                        if let Ok(dto) = response.json::<PixelGrainDto>(){
-                            let _ = sender.send(vec![dto]);
+                if button_event.state.is_pressed() {
+                    let url =format!("{}/api/canvas/pixel", API_BASE_URL );
+                    let Some((x, y) )= get_mouse_pixel(&q_windows, &camera_query) else {
+                        continue;
+                    };
+                    //get this from mouse position and a color pallete
+                    let pixel_dto = PixelGrainDto { x: (x / PIXEL_SIZE) as i64, y: (y / PIXEL_SIZE) as i64, color: color_to_hex(&picked_color.0).to_string()};
+                    println!("pixel_dto: {:?}", pixel_dto);
+                    let Ok(request): Result<ehttp::Request, serde_json::Error> = http::put_json(url, &pixel_dto) else {
+                        continue;
+                    };
+                    let sender = sender.clone();
+                    ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
+                        
+                        println!("Result: {:?}", result);
+                        if let Ok(response) = result {
+                            if let Ok(dto) = response.json::<PixelGrainDto>(){
+                                println!("Dto: {:?}", dto);
+                                let _ = sender.send(vec![dto]);
+                            }
                         }
-                    }
-                });
+                    });
+                }
             },
             _ => continue,
         }
@@ -232,7 +257,6 @@ fn spawn_draw_pixel_grains_task(
     let sender = sender.clone();
     let status_sender = status_sender.clone();
     ehttp::fetch(request, move |result: ehttp::Result<ehttp::Response>| {
-        println!("Result: {:?}", result);
 
         if let Ok(response) = result {
             if let Ok(dto) = response.json::<Vec<PixelGrainDto>>(){
@@ -301,7 +325,6 @@ fn read_stream(receiver: Res<StreamReceiver>,
                 Ok(c) => c,
                 Err(_) => Color::GRAY,
             };
-
             let x = pixel_grain_dto.x as f32 * PIXEL_SIZE;
             let y = pixel_grain_dto.y as f32 * PIXEL_SIZE;
 
