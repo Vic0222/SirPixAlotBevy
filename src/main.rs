@@ -7,8 +7,8 @@ use std::time::Duration;
 use bevy::{
     core_pipeline::bloom::BloomSettings, input::mouse::{MouseButtonInput, MouseMotion}, prelude::*, time::common_conditions::on_timer, window::PrimaryWindow
 };
-use bevy_egui::{egui::{self, color_picker::{color_edit_button_rgb, color_edit_button_srgb}}, EguiContexts, EguiPlugin};
-use components::{MouseRightButtonPressed, PickedColor, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
+use bevy_egui::{egui::{self, color_picker::{color_edit_button_rgb, color_edit_button_srgb}, Id, Pos2}, EguiContexts, EguiPlugin};
+use components::{ColorPickerUIInfo, ColorPickerUIInfoResource, MouseRightButtonPressed, PickedColor, PixelGrain, PixelRectRequestStatus, PixelRectangle, StatusStreamReceiver, StatusStreamSender, StreamReceiver, StreamSender};
 use crossbeam_channel::unbounded;
 use dtos::PixelGrainDto;
 
@@ -20,15 +20,36 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugins(EguiPlugin)
         .add_systems(Startup, (setup_camera))
-        .add_systems(Update, (color_picker_system, update_window_size,handle_mouse, draw_gizmos, (spawn_draw_pixel_grains_task.run_if(on_timer(Duration::from_secs(1),)), read_status_stream).chain(), (read_stream, despawn_pixel_grains).chain()));
+        .add_systems(Update, ((color_picker_system, handle_mouse).chain(), update_window_size, draw_gizmos, (spawn_draw_pixel_grains_task.run_if(on_timer(Duration::from_secs(1),)), read_status_stream).chain(), (read_stream, despawn_pixel_grains).chain()));
         
     app.run();
 }
 
-fn color_picker_system(mut contexts: EguiContexts, mut picked_color: ResMut<PickedColor>) {
-    egui::Window::new("Color Picker").show(contexts.ctx_mut(), |ui| {
-        color_edit_button_srgb(ui, &mut picked_color.0);
+fn color_picker_system(mut contexts: EguiContexts, mut picked_color: ResMut<PickedColor>, mut clicked_color_picker: ResMut<ColorPickerUIInfoResource>) {
+    
+    let title = "Color Picker";
+    let window = egui::Window::new(title).show(contexts.ctx_mut(), |ui| {
+        let edit = ui.color_edit_button_srgb(&mut picked_color.0);
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+       ui.memory(|mem| {
+         let picking_color = mem.any_popup_open();
+         let world_rect = match mem.area_rect(Id::new(title)) {
+            Some(world_rect) => world_rect,
+            None => bevy_egui::egui::Rect::NOTHING,
+        };
+        
+        let pointer_pos = match pointer_pos {
+            Some(pointer_pos) => pointer_pos,
+            None => Pos2::ZERO,
+        };
+        let contains_pointer = world_rect.contains(pointer_pos);
+         *clicked_color_picker = ColorPickerUIInfoResource(ColorPickerUIInfo { is_open: picking_color, contains_pointer: contains_pointer});
+
+        //println!("contains_pointer: {:?}", clicked_color_picker.0);
+       });
+        
     });
+    
 }
 
 
@@ -102,6 +123,7 @@ fn setup_camera(mut commands: Commands) {
     commands.insert_resource(StatusStreamReceiver(rx));
     commands.insert_resource(StatusStreamSender(tx));
     commands.insert_resource(PickedColor([255,255,255]));
+    commands.insert_resource(ColorPickerUIInfoResource(components::ColorPickerUIInfo { is_open: false, contains_pointer: false }));
 }
 
 
@@ -148,7 +170,8 @@ fn handle_mouse(
     q_windows: Query<&Window, With<PrimaryWindow>>,
     camera_query: Query<(&Camera, &GlobalTransform)>,
     sender: Res<StreamSender>,
-    picked_color: ResMut<PickedColor>
+    picked_color: ResMut<PickedColor>,
+    picking_color: ResMut<ColorPickerUIInfoResource>
 ) {
     let Ok(mut camera) = camera.get_single_mut() else {
         return;
@@ -162,7 +185,10 @@ fn handle_mouse(
                 *mouse_pressed = MouseRightButtonPressed(button_event.state.is_pressed());
             },
             MouseButton::Left => {
-                if button_event.state.is_pressed() {
+                let is_pressed = button_event.state.is_pressed();
+                
+                if is_pressed && !picking_color.0.is_open && !picking_color.0.contains_pointer {
+                    
                     let url =format!("{}/api/canvas/pixel", API_BASE_URL );
                     let Some((x, y) )= get_mouse_pixel(&q_windows, &camera_query) else {
                         continue;

@@ -1,4 +1,5 @@
 use bevy::{math::Vec2, prelude::{Component, Deref, Resource}};
+use bevy_egui::egui::Rect;
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::dtos::PixelGrainDto;
@@ -20,6 +21,16 @@ pub struct StatusStreamReceiver(pub Receiver<PixelRectRequestStatus>);
 
 #[derive(Resource, Deref)]
 pub struct PickedColor(pub [u8; 3]);
+
+#[derive(Resource, Deref)]
+pub struct ColorPickerUIInfoResource(pub ColorPickerUIInfo);
+
+
+#[derive(Debug)]
+pub struct ColorPickerUIInfo{
+    pub is_open: bool,
+    pub contains_pointer: bool
+}
 
 
 #[derive(Component)]
