@@ -39,6 +39,14 @@ jobs:
           toolchain: stable
           profile: minimal
           override: true
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        continue-on-error: false
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-build-cache
       - name: Install Trunk
         run: cargo install --locked trunk
       - name: Setup wasm32 target
