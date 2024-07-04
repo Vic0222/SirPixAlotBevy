@@ -12,7 +12,7 @@ use components::{ColorPickerUIInfo, ColorPickerUIInfoResource, MouseRightButtonP
 use crossbeam_channel::unbounded;
 use dtos::PixelGrainDto;
 
-const API_BASE_URL: &str = "http://172.104.37.82";
+const API_BASE_URL: &str = "https://sirpixalotwebapi.fly.dev";
 
 fn main() {
     let mut binding = App::new();
