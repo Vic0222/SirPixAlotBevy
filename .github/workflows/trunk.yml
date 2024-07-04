@@ -52,7 +52,7 @@ jobs:
       - name: Setup wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Build
-        run: trunk build --release --public-url=SirPixAlotBevy
+        run: trunk build --release --public-url=/SirPixAlotBevy
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
