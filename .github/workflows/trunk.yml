@@ -41,6 +41,8 @@ jobs:
           override: true
       - name: Install Trunk
         run: cargo install --locked trunk
+      - name: Setup wasm32 target
+        run: rustup target add wasm32-unknown-unknown
       - name: Build
         run: trunk build --release
       - name: Upload artifact
