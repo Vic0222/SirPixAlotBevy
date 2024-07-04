@@ -46,6 +46,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin
           key: cargo-build-cache
       - name: Install Trunk
         run: cargo install --locked trunk
